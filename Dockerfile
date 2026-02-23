@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 安装 uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# 安装 uv (用 pip 安装，避免从 ghcr.io 拉取镜像)
+RUN pip install --no-cache-dir uv -i https://mirrors.aliyun.com/pypi/simple/
 
 # 先复制依赖文件，利用 Docker 缓存
 COPY pyproject.toml uv.lock* ./
