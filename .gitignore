@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# uv
+uv.lock
+
+# Database
+db/*.db
+
+# Cache
+data/cache/
+
+# Reports (generated)
+reports/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+nul

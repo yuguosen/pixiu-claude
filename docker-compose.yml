@@ -1,0 +1,22 @@
+name: pixiu
+
+services:
+  pixiu-bot:
+    build: .
+    environment:
+      - TZ=Asia/Shanghai
+      - FEISHU_APP_ID=${FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET}
+      - FEISHU_PUSH_CHAT_ID=${FEISHU_PUSH_CHAT_ID:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+    volumes:
+      - pixiu_db:/app/db
+      - pixiu_reports:/app/reports
+    restart: unless-stopped
+
+volumes:
+  pixiu_db:
+  pixiu_reports:
