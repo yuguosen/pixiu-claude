@@ -44,7 +44,8 @@ def reply_card(client: lark.Client, message_id: str, card: dict) -> str | None:
         .build()
     resp = client.im.v1.message.reply(req)
     if not resp.success():
-        logger.error("reply_card failed: %s %s", resp.code, resp.msg)
+        logger.error("reply_card failed: code=%s msg=%s card_keys=%s",
+                      resp.code, resp.msg, list(card.keys()) if isinstance(card, dict) else "not-dict")
         return None
     return resp.data.message_id if resp.data else None
 

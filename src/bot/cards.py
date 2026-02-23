@@ -57,7 +57,7 @@ def _col(name: str, display_name: str, width: str = "auto", align: str = "left")
 def help_card() -> dict:
     """命令列表卡片"""
     columns = [
-        _col("cmd", "命令", width="short"),
+        _col("cmd", "命令"),
         _col("desc", "说明"),
     ]
     rows = [
