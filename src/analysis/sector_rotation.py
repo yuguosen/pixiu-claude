@@ -5,9 +5,12 @@
 2. 检测新兴热点 (从弱→强的板块)
 3. 跟踪资金流向 (主力净流入)
 4. 计算热度评分并持续追踪生命周期
+5. 按关键词搜索行业/概念板块行情
 """
 
+import difflib
 import json
+import logging
 from datetime import datetime
 
 import akshare as ak
@@ -15,9 +18,11 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
-from src.data.fetcher import fetch_index_daily
+from src.data.fetcher import fetch_index_daily, fetch_with_cache
 from src.analysis.indicators import calculate_ma
 from src.memory.database import execute_query, execute_write, execute_many
+
+logger = logging.getLogger(__name__)
 
 console = Console()
 
@@ -504,3 +509,242 @@ def get_rotation_summary(sectors: list[dict]) -> str:
     if weak:
         lines.append(f"弱势板块: {', '.join(s['name'] for s in weak)}")
     return "\n".join(lines)
+
+
+# ── 关键词搜索行业/概念板块 ──────────────────────────────
+
+
+def search_sector_or_concept(keyword: str) -> dict | None:
+    """按关键词搜索行业板块或概念板块
+
+    匹配链 (6 步回退):
+    1. 精确匹配 TRACKED_SECTORS
+    2. 子串匹配 TRACKED_SECTORS
+    3. 反向查找 SECTOR_FUND_KEYWORDS (如 "芯片" → "半导体")
+    4. difflib 模糊匹配 TRACKED_SECTORS
+    5. AKShare 全量行业板块名称子串搜索
+    6. AKShare 概念板块名称子串搜索
+
+    Returns:
+        {"type": "industry"|"concept", "name": str, "match": str,
+         "realtime_row": dict | None}
+        或 None (未匹配)
+    """
+    kw = keyword.strip()
+    if not kw:
+        return None
+
+    # ── 1. 精确匹配 ──
+    if kw in TRACKED_SECTORS:
+        return {"type": "industry", "name": kw, "match": "exact"}
+
+    # ── 2. 子串匹配 ──
+    for sector in TRACKED_SECTORS:
+        clean = sector.replace("Ⅱ", "").replace("Ⅲ", "")
+        if kw in sector or kw in clean or sector in kw or clean in kw:
+            return {"type": "industry", "name": sector, "match": "substring"}
+
+    # ── 3. 反向查找 SECTOR_FUND_KEYWORDS ──
+    try:
+        from src.data.fund_discovery import SECTOR_FUND_KEYWORDS
+        for sector, kw_list in SECTOR_FUND_KEYWORDS.items():
+            if any(kw in k or k in kw for k in kw_list):
+                return {"type": "industry", "name": sector, "match": "keyword_reverse"}
+    except ImportError:
+        pass
+
+    # ── 4. difflib 模糊匹配 ──
+    clean_sectors = {s.replace("Ⅱ", "").replace("Ⅲ", ""): s for s in TRACKED_SECTORS}
+    matches = difflib.get_close_matches(kw, clean_sectors.keys(), n=1, cutoff=0.5)
+    if matches:
+        return {"type": "industry", "name": clean_sectors[matches[0]], "match": "fuzzy"}
+
+    # ── 5. AKShare 全量行业板块 ──
+    industry_df = _fetch_all_industry_boards()
+    if not industry_df.empty:
+        col = "板块名称"
+        hit = industry_df[industry_df[col].str.contains(kw, na=False, case=False)]
+        if not hit.empty:
+            # 按成交额降序取第一个
+            if "成交额" in hit.columns:
+                hit = hit.sort_values("成交额", ascending=False)
+            row = hit.iloc[0]
+            return {
+                "type": "industry",
+                "name": row[col],
+                "match": "akshare_industry",
+                "realtime_row": _row_to_dict(row),
+            }
+
+    # ── 6. AKShare 概念板块 ──
+    concept_df = _fetch_all_concept_boards()
+    if not concept_df.empty:
+        col = "板块名称"
+        hit = concept_df[concept_df[col].str.contains(kw, na=False, case=False)]
+        if not hit.empty:
+            if "成交额" in hit.columns:
+                hit = hit.sort_values("成交额", ascending=False)
+            row = hit.iloc[0]
+            return {
+                "type": "concept",
+                "name": row[col],
+                "match": "akshare_concept",
+                "realtime_row": _row_to_dict(row),
+            }
+
+    return None
+
+
+def get_board_detail(board_name: str, board_type: str = "industry",
+                     cached_realtime: dict | None = None) -> dict | None:
+    """获取板块/概念的详细行情数据
+
+    Args:
+        board_name: 板块名称
+        board_type: "industry" 或 "concept"
+        cached_realtime: 搜索阶段已获取的实时数据行 (避免重复请求)
+
+    Returns:
+        {
+            "name": str,
+            "type": str,
+            "today": {"close", "change_pct", "amount", "turnover", "volume"},
+            "trend_5d": [{"date", "change_pct", "amount"}],
+            "related_fund_count": int,
+        }
+    """
+    result = {"name": board_name, "type": board_type}
+
+    # ── 今日数据 ──
+    today_data = cached_realtime
+    if not today_data:
+        today_data = _get_board_realtime(board_name, board_type)
+    if not today_data:
+        return None
+
+    result["today"] = {
+        "close": today_data.get("最新价", 0),
+        "change_pct": today_data.get("涨跌幅", 0),
+        "amount": today_data.get("成交额", 0),
+        "turnover": today_data.get("换手率", 0),
+        "volume": today_data.get("成交量", 0),
+    }
+
+    # ── 近 5 日趋势 ──
+    try:
+        if board_type == "industry":
+            hist = fetch_sector_history(board_name, days=10)
+        else:
+            hist = _fetch_concept_history(board_name, days=10)
+
+        if hist is not None and not hist.empty:
+            recent = hist.tail(5)
+            trend = []
+            for _, row in recent.iterrows():
+                trend.append({
+                    "date": str(row.get("date", "")),
+                    "change_pct": float(row.get("change_pct", 0)),
+                    "amount": float(row.get("amount", 0)),
+                })
+            result["trend_5d"] = trend
+    except Exception as e:
+        logger.debug("获取 %s 历史失败: %s", board_name, e)
+
+    # ── 相关基金数 ──
+    result["related_fund_count"] = _count_related_funds(board_name, board_type)
+
+    return result
+
+
+# ── 内部工具函数 ──────────────────────────────────────────
+
+
+def _fetch_all_industry_boards() -> pd.DataFrame:
+    """获取全量行业板块实时行情 (带缓存)"""
+    def _fetch():
+        return ak.stock_board_industry_name_em()
+    return fetch_with_cache("industry_board_list", {}, _fetch)
+
+
+def _fetch_all_concept_boards() -> pd.DataFrame:
+    """获取全量概念板块实时行情 (带缓存)"""
+    def _fetch():
+        return ak.stock_board_concept_name_em()
+    return fetch_with_cache("concept_board_list", {}, _fetch)
+
+
+def _fetch_concept_history(concept_name: str, days: int = 10) -> pd.DataFrame:
+    """获取概念板块历史行情"""
+    try:
+        from datetime import timedelta
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=days + 30)).strftime("%Y%m%d")
+        df = ak.stock_board_concept_hist_em(
+            symbol=concept_name, period="日k",
+            start_date=start, end_date=end, adjust=""
+        )
+        if df is not None and not df.empty:
+            df = df.rename(columns={
+                "日期": "date", "开盘": "open", "收盘": "close",
+                "最高": "high", "最低": "low", "涨跌幅": "change_pct",
+                "成交量": "volume", "成交额": "amount", "换手率": "turnover",
+            })
+            for col in ["open", "close", "high", "low", "change_pct", "volume", "amount", "turnover"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+    except Exception as e:
+        logger.debug("获取概念板块 %s 历史失败: %s", concept_name, e)
+        return pd.DataFrame()
+
+
+def _get_board_realtime(board_name: str, board_type: str) -> dict | None:
+    """从实时行情中提取单个板块的数据"""
+    if board_type == "industry":
+        df = _fetch_all_industry_boards()
+    else:
+        df = _fetch_all_concept_boards()
+
+    if df.empty:
+        return None
+
+    col = "板块名称"
+    row = df[df[col] == board_name]
+    if row.empty:
+        return None
+    return _row_to_dict(row.iloc[0])
+
+
+def _row_to_dict(row) -> dict:
+    """将 DataFrame 行转为 dict，处理 numpy 类型"""
+    d = {}
+    for k, v in row.items():
+        try:
+            d[k] = float(v) if isinstance(v, (int, float)) or (hasattr(v, 'item') and not isinstance(v, str)) else v
+        except (ValueError, TypeError):
+            d[k] = v
+    return d
+
+
+def _count_related_funds(board_name: str, board_type: str) -> int:
+    """统计观察池中与该板块相关的基金数量"""
+    count = 0
+    try:
+        from src.data.fund_discovery import SECTOR_FUND_KEYWORDS
+        keywords = SECTOR_FUND_KEYWORDS.get(board_name, [])
+        if not keywords:
+            # 概念板块或未映射的行业: 用板块名本身作为关键词
+            clean = board_name.replace("Ⅱ", "").replace("Ⅲ", "").replace("概念", "")
+            keywords = [clean]
+
+        watchlist = execute_query(
+            "SELECT w.fund_code, f.fund_name FROM watchlist w "
+            "LEFT JOIN funds f ON w.fund_code = f.fund_code"
+        )
+        for w in watchlist:
+            fname = w.get("fund_name") or ""
+            if any(kw in fname for kw in keywords):
+                count += 1
+    except Exception:
+        pass
+    return count

@@ -1,5 +1,7 @@
 """飞书消息卡片构建器 — 使用飞书原生 table 组件"""
 
+import os
+
 
 def _card(title: str, color: str, elements: list[dict]) -> dict:
     """构建飞书卡片基础结构"""
@@ -51,6 +53,18 @@ def _col(name: str, display_name: str, width: str = "auto", align: str = "left")
     }
 
 
+def _short_path(path: str) -> str:
+    """将绝对路径转为 reports/ 开头的相对路径"""
+    # 找到 "reports/" 并截取后面的部分
+    sep = "reports" + os.sep
+    alt_sep = "reports/"
+    for prefix in (sep, alt_sep):
+        idx = path.find(prefix)
+        if idx >= 0:
+            return path[idx:]
+    return os.path.basename(path)
+
+
 # ── 卡片模板 ──
 
 
@@ -62,12 +76,13 @@ def help_card() -> dict:
     ]
     rows = [
         {"cmd": "帮助", "desc": "显示此命令列表"},
-        {"cmd": "行情", "desc": "市场快照 (指数+状态)"},
+        {"cmd": "行情 [关键词]", "desc": "市场快照 / 板块行情"},
         {"cmd": "持仓", "desc": "当前持仓状态"},
         {"cmd": "历史 [N]", "desc": "最近 N 条交易"},
         {"cmd": "建议", "desc": "生成交易建议 (耗时较长)"},
         {"cmd": "日报", "desc": "完整日常流程 (11步)"},
         {"cmd": "配置", "desc": "资产配置检查"},
+        {"cmd": "搜索 <关键词>", "desc": "按主题搜索基金"},
         {"cmd": "记录", "desc": "记录交易 (多步对话)"},
     ]
     return _card("貔貅 — 命令列表", "purple", [
@@ -212,6 +227,62 @@ def market_card(regime: dict | None, snapshots: list[dict] | None) -> dict:
     return _card("市场行情", color, elements or [_md("暂无市场数据")])
 
 
+def sector_market_card(keyword: str, match: dict, detail: dict) -> dict:
+    """板块/概念行情卡片"""
+    board_name = match["name"]
+    board_type = "行业板块" if match["type"] == "industry" else "概念板块"
+    today = detail.get("today", {})
+    change = today.get("change_pct", 0) or 0
+
+    elements = []
+
+    # ── 基本信息 ──
+    sign = "+" if change >= 0 else ""
+    emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+    amount_yi = (today.get("amount") or 0) / 1e8
+    turnover = today.get("turnover") or 0
+
+    match_hint = ""
+    if keyword != board_name:
+        match_hint = f"  (\"{keyword}\" → {board_name})"
+
+    elements.append(_md(
+        f"**类型**: {board_type}{match_hint}\n"
+        f"**最新价**: {today.get('close', 0):,.2f}  {emoji} {sign}{change:.2f}%\n"
+        f"**成交额**: {amount_yi:,.1f} 亿  **换手率**: {turnover:.2f}%"
+    ))
+
+    # ── 5 日趋势 ──
+    trend = detail.get("trend_5d", [])
+    if trend:
+        elements.append(_hr())
+        trend_columns = [
+            _col("date", "日期"),
+            _col("change", "涨跌幅", align="right"),
+            _col("amount", "成交额(亿)", align="right"),
+        ]
+        trend_rows = []
+        for t in trend:
+            c = t.get("change_pct", 0)
+            s = "+" if c >= 0 else ""
+            amt = (t.get("amount") or 0) / 1e8
+            trend_rows.append({
+                "date": str(t.get("date", ""))[-5:],  # MM-DD
+                "change": f"{s}{c:.2f}%",
+                "amount": f"{amt:,.1f}",
+            })
+        elements.append(_table(trend_columns, trend_rows, page_size=5))
+
+    # ── 相关基金 ──
+    fund_count = detail.get("related_fund_count", 0)
+    if fund_count > 0:
+        elements.append(_hr())
+        elements.append(_md(f"观察池中有 **{fund_count}** 只相关基金"))
+
+    color = "green" if change > 0 else "red" if change < 0 else "blue"
+    return _card(f"{board_name} 行情", color, elements)
+
+
 def recommendation_card(report_path: str, recommendations: list[dict] | None = None) -> dict:
     """交易建议卡片"""
     elements = []
@@ -250,7 +321,7 @@ def recommendation_card(report_path: str, recommendations: list[dict] | None = N
             summary = content[:2000]
             elements.append(_md(summary))
         except Exception:
-            elements.append(_md(f"报告已生成: {report_path}"))
+            elements.append(_md(f"报告已生成: `{_short_path(report_path)}`"))
 
     if recommendations:
         has_buy = any(r.get("action_label") == "买入" for r in recommendations)
@@ -267,15 +338,117 @@ def recommendation_card(report_path: str, recommendations: list[dict] | None = N
     return _card("交易建议", color, elements or [_md("无建议")])
 
 
-def daily_summary_card(success: bool, report_path: str | None = None) -> dict:
-    """日报完成摘要卡片"""
-    if success:
-        msg = "✅ 日常分析流程 (11步) 已完成"
-        if report_path:
-            msg += f"\n\n报告: `{report_path}`"
-        return _card("日报完成", "green", [_md(msg)])
+def daily_summary_card(success: bool, summary: dict | None = None, error: str | None = None) -> dict:
+    """日报完成摘要卡片 — 展示市场状态、建议、LLM 结论"""
+    if not success:
+        msg = "❌ 日常分析流程执行出错"
+        if error:
+            msg += f"\n\n{error[:500]}"
+        return _card("日报异常", "red", [_md(msg)])
+
+    if not summary:
+        return _card("日报完成", "green", [_md("✅ 日常分析流程 (11步) 已完成")])
+
+    elements = []
+
+    # ── 市场状态 ──
+    regime = summary.get("regime")
+    if regime:
+        regime_labels = {
+            "bull_strong": "🟢 强势上涨",
+            "bull_weak": "🟢 弱势上涨",
+            "ranging": "🟡 震荡",
+            "bear_weak": "🔴 弱势下跌",
+            "bear_strong": "🔴 强势下跌",
+        }
+        label = regime_labels.get(regime["regime"], regime["regime"])
+        elements.append(_md(
+            f"**市场状态**: {label}\n"
+            f"**趋势得分**: {regime['trend_score']:.1f} | "
+            f"**波动率**: {regime['volatility']:.2%}"
+        ))
+
+    # ── 指数快照 ──
+    indices = summary.get("indices")
+    if indices:
+        idx_columns = [
+            _col("name", "指数"),
+            _col("close", "收盘", align="right"),
+            _col("change", "涨跌", align="right"),
+        ]
+        idx_rows = []
+        for s in indices:
+            change = s.get("change_pct")
+            if change is not None:
+                sign = "+" if change >= 0 else ""
+                change_str = f"{sign}{change:.2f}%"
+            else:
+                change_str = "-"
+            idx_rows.append({
+                "name": s["name"],
+                "close": f"{s['close']:,.2f}",
+                "change": change_str,
+            })
+        elements.append(_table(idx_columns, idx_rows, page_size=5))
+
+    # ── 交易建议 ──
+    recs = summary.get("recommendations")
+    if recs:
+        elements.append(_hr())
+        elements.append(_md("**今日建议**"))
+        rec_columns = [
+            _col("action", "操作", align="center"),
+            _col("fund", "基金"),
+            _col("amount", "金额", align="right"),
+            _col("conf", "置信度", align="center"),
+        ]
+        rec_rows = []
+        for r in recs:
+            action = "买入" if r["action"] == "buy" else "卖出"
+            emoji = "🟢" if r["action"] == "buy" else "🔴"
+            fund_name = r.get("fund_name") or r["fund_code"]
+            conf = r.get("confidence") or 0
+            rec_rows.append({
+                "action": f"{emoji} {action}",
+                "fund": f"{fund_name} ({r['fund_code']})",
+                "amount": f"{r['amount']:,.0f}",
+                "conf": f"{conf:.0%}" if isinstance(conf, float) else str(conf),
+            })
+        elements.append(_table(rec_columns, rec_rows, page_size=10))
+
+        # 简要理由
+        for r in recs[:3]:
+            reason = r.get("reason") or ""
+            if reason:
+                action = "买入" if r["action"] == "buy" else "卖出"
+                elements.append(_md(f"**{action} {r['fund_code']}**: {reason[:200]}"))
     else:
-        return _card("日报异常", "red", [_md("❌ 日常分析流程执行出错，请检查日志")])
+        elements.append(_hr())
+        elements.append(_md("今日无新建议 (持有/观望)"))
+
+    # ── LLM 结论 ──
+    llm_conclusion = summary.get("llm_conclusion")
+    if llm_conclusion:
+        elements.append(_hr())
+        elements.append(_md(f"**AI 结论**\n{llm_conclusion[:800]}"))
+
+    # ── 报告路径 ──
+    report_path = summary.get("report_path")
+    if report_path:
+        elements.append(_md(f"\n📄 `{_short_path(report_path)}`"))
+
+    # 卡片颜色
+    if regime:
+        color_map = {
+            "bull_strong": "green", "bull_weak": "green",
+            "ranging": "yellow",
+            "bear_weak": "red", "bear_strong": "red",
+        }
+        color = color_map.get(regime["regime"], "green")
+    else:
+        color = "green"
+
+    return _card("日报完成", color, elements or [_md("✅ 日常分析流程已完成")])
 
 
 def allocation_card(result: dict, regime: str, pe_pct: float) -> dict:
@@ -314,6 +487,57 @@ def allocation_card(result: dict, regime: str, pe_pct: float) -> dict:
         elements.append(_md(f"💡 建议: {s}"))
 
     return _card("资产配置检查", "blue", elements)
+
+
+def search_card(keyword: str, results: list[dict]) -> dict:
+    """主题搜索结果卡片"""
+    if not results:
+        return _card(f"搜索: {keyword}", "indigo", [
+            _md(f"未找到包含 \"{keyword}\" 的基金"),
+        ])
+
+    columns = [
+        _col("code", "代码"),
+        _col("name", "名称"),
+        _col("ret_3m", "近3月", align="right"),
+        _col("ret_1y", "近1年", align="right"),
+        _col("score", "评分", align="right"),
+    ]
+    rows = []
+    for r in results:
+        ret_3m = r.get("return_3m")
+        ret_1y = r.get("return_1y")
+        score = r.get("composite_score", 0)
+        rows.append({
+            "code": r["fund_code"],
+            "name": r["fund_name"][:16],
+            "ret_3m": f"{ret_3m:+.1f}%" if ret_3m is not None else "-",
+            "ret_1y": f"{ret_1y:+.1f}%" if ret_1y is not None else "-",
+            "score": f"{score:.1f}",
+        })
+
+    # 统计新加入观察池的数量
+    added_count = 0
+    try:
+        from src.memory.database import execute_query
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        for r in results:
+            watch = execute_query(
+                "SELECT added_date, reason FROM watchlist WHERE fund_code = ?",
+                (r["fund_code"],),
+            )
+            if watch and watch[0]["added_date"] == today and "主题搜索" in (watch[0].get("reason") or ""):
+                added_count += 1
+    except Exception:
+        pass
+
+    elements = [_table(columns, rows, page_size=20)]
+    if added_count > 0:
+        elements.append(_hr())
+        elements.append(_md(f"已自动加入观察池 **{added_count}** 只"))
+
+    return _card(f"搜索: {keyword} (找到 {len(results)} 只)", "indigo", elements)
 
 
 def trade_prompt_card(step: str, prompt: str) -> dict:

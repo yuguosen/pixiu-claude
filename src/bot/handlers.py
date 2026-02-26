@@ -61,6 +61,14 @@ def handle_market() -> dict:
     except Exception as e:
         logger.warning("获取指数快照失败: %s", e)
 
+    # 回退: DB 无数据时从 AKShare 实时获取
+    if not snapshots:
+        try:
+            from src.data.market_data import get_realtime_index_snapshot
+            snapshots = get_realtime_index_snapshot()
+        except Exception as e:
+            logger.warning("实时指数获取失败: %s", e)
+
     try:
         from src.analysis.market_regime import detect_market_regime
         regime = detect_market_regime()
@@ -68,6 +76,31 @@ def handle_market() -> dict:
         logger.warning("检测市场状态失败: %s", e)
 
     return cards.market_card(regime, snapshots)
+
+
+def handle_market_sector(keyword: str) -> dict:
+    """按关键词查询行业/概念板块行情"""
+    try:
+        from src.analysis.sector_rotation import search_sector_or_concept, get_board_detail
+
+        match = search_sector_or_concept(keyword)
+        if not match:
+            return cards.error_card(
+                f"未找到匹配 \"{keyword}\" 的板块\n\n"
+                "试试: 半导体、光伏、白酒、新能源车、DeepSeek"
+            )
+
+        detail = get_board_detail(
+            match["name"], match["type"],
+            cached_realtime=match.get("realtime_row"),
+        )
+        if not detail:
+            return cards.error_card(f"获取 {match['name']} 数据失败")
+
+        return cards.sector_market_card(keyword, match, detail)
+    except Exception as e:
+        logger.exception("板块行情查询失败")
+        return cards.error_card(f"板块行情查询失败: {e}")
 
 
 def handle_recommend() -> dict:
@@ -111,21 +144,79 @@ def handle_daily() -> dict:
         from src.main import cmd_daily
         cmd_daily([])
 
-        # 查找最新报告
-        from pathlib import Path
-        from src.config import CONFIG
-        reports_dir = Path(CONFIG["reports_dir"])
-        date_dir = reports_dir / datetime.now().strftime("%Y-%m")
-        if date_dir.exists():
-            reports = sorted(date_dir.glob("*_recommendation.md"), reverse=True)
-            report_path = str(reports[0]) if reports else None
-        else:
-            report_path = None
-
-        return cards.daily_summary_card(True, report_path)
+        summary = _extract_daily_summary()
+        return cards.daily_summary_card(True, summary=summary)
     except Exception as e:
         logger.exception("日报流程失败")
-        return cards.daily_summary_card(False)
+        return cards.daily_summary_card(False, error=str(e))
+
+
+def _extract_daily_summary() -> dict:
+    """从数据库提取日报关键数据"""
+    from src.memory.database import execute_query
+
+    summary: dict = {}
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 1. 市场状态
+    try:
+        from src.analysis.market_regime import detect_market_regime
+        regime = detect_market_regime()
+        if regime:
+            summary["regime"] = regime
+    except Exception:
+        pass
+
+    # 2. 指数快照
+    try:
+        from src.data.market_data import get_latest_index_snapshot, get_realtime_index_snapshot
+        indices = get_latest_index_snapshot()
+        if not indices:
+            indices = get_realtime_index_snapshot()
+        if indices:
+            summary["indices"] = indices
+    except Exception:
+        pass
+
+    # 3. 今日建议
+    try:
+        recs = execute_query(
+            """SELECT t.fund_code, t.action, t.amount, t.confidence, t.reason,
+                      f.fund_name
+               FROM trades t
+               LEFT JOIN funds f ON t.fund_code = f.fund_code
+               WHERE t.trade_date = ? AND t.status = 'pending'
+               ORDER BY t.created_at DESC""",
+            (today,),
+        )
+        if recs:
+            summary["recommendations"] = recs
+    except Exception:
+        pass
+
+    # 4. LLM 决策结论
+    try:
+        decisions = execute_query(
+            """SELECT reasoning FROM agent_decisions
+               WHERE decision_date = ? ORDER BY id DESC LIMIT 1""",
+            (today,),
+        )
+        if decisions and decisions[0].get("reasoning"):
+            summary["llm_conclusion"] = decisions[0]["reasoning"]
+    except Exception:
+        pass
+
+    # 5. 报告路径
+    from pathlib import Path
+    from src.config import CONFIG
+    reports_dir = Path(CONFIG["reports_dir"])
+    date_dir = reports_dir / datetime.now().strftime("%Y-%m")
+    if date_dir.exists():
+        reports = sorted(date_dir.glob("*_recommendation.md"), reverse=True)
+        if reports:
+            summary["report_path"] = str(reports[0])
+
+    return summary
 
 
 def handle_allocation() -> dict:
@@ -154,6 +245,19 @@ def handle_allocation() -> dict:
     except Exception as e:
         logger.exception("配置检查失败")
         return cards.error_card(f"配置检查失败: {e}")
+
+
+def handle_search(keyword: str) -> dict:
+    """按关键词搜索基金 (耗时操作)"""
+    try:
+        from src.data.fund_discovery import discover_by_theme
+
+        keywords = keyword.split()
+        results = discover_by_theme(keywords)
+        return cards.search_card(keyword, results)
+    except Exception as e:
+        logger.exception("搜索失败")
+        return cards.error_card(f"搜索失败: {e}")
 
 
 def handle_trade_record(trade_data: dict) -> dict:

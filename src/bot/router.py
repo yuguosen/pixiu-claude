@@ -37,10 +37,12 @@ COMMAND_MAP = {
     "配置": "allocation",
     "/allocation": "allocation",
     "资产配置": "allocation",
+    "搜索": "search",
+    "/search": "search",
 }
 
 # 耗时命令 — 需要在独立线程中执行
-LONG_RUNNING_COMMANDS = {"recommend", "daily"}
+LONG_RUNNING_COMMANDS = {"recommend", "daily", "search"}
 
 session_manager = SessionManager()
 
@@ -83,13 +85,16 @@ def _parse_command(text: str) -> tuple[str, list[str]]:
     return cmd, args
 
 
-def _run_long_command(client: lark.Client, message_id: str, cmd: str):
+def _run_long_command(client: lark.Client, message_id: str, cmd: str, args: list[str] | None = None):
     """在独立线程中执行耗时命令"""
     try:
         if cmd == "recommend":
             result_card = handlers.handle_recommend()
         elif cmd == "daily":
             result_card = handlers.handle_daily()
+        elif cmd == "search":
+            keyword = " ".join(args) if args else ""
+            result_card = handlers.handle_search(keyword)
         else:
             return
         reply_card(client, message_id, result_card)
@@ -133,7 +138,11 @@ def build_event_handler(client: lark.Client):
             reply_card(client, message_id, handlers.handle_history(limit))
 
         elif cmd == "market":
-            reply_card(client, message_id, handlers.handle_market())
+            if args:
+                keyword = " ".join(args)
+                reply_card(client, message_id, handlers.handle_market_sector(keyword))
+            else:
+                reply_card(client, message_id, handlers.handle_market())
 
         elif cmd == "allocation":
             reply_card(client, message_id, handlers.handle_allocation())
@@ -141,6 +150,19 @@ def build_event_handler(client: lark.Client):
         elif cmd == "trade":
             prompt = session_manager.start_trade_session(user_id)
             reply_card(client, message_id, cards.trade_prompt_card("第1步", prompt))
+
+        elif cmd == "search":
+            keyword = " ".join(args)
+            if not keyword:
+                reply_card(client, message_id, cards.error_card("请输入搜索关键词，如: 搜索 养老"))
+                return
+            reply_card(client, message_id, cards.processing_card(f"搜索 \"{keyword}\""))
+            thread = threading.Thread(
+                target=_run_long_command,
+                args=(client, message_id, cmd, args),
+                daemon=True,
+            )
+            thread.start()
 
         elif cmd in LONG_RUNNING_COMMANDS:
             # 先回复 "处理中", 再在后台线程执行

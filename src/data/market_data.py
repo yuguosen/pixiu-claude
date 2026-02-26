@@ -1,5 +1,7 @@
 """市场指数与宏观数据获取"""
 
+import logging
+
 from rich.console import Console
 
 from src.config import CONFIG
@@ -7,6 +9,7 @@ from src.data.fetcher import fetch_index_daily
 from src.memory.database import upsert_market_index
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def update_all_indices(start_date: str = None) -> dict:
@@ -75,4 +78,42 @@ def get_latest_index_snapshot() -> list[dict]:
                 "change_pct": change_pct,
                 "volume": row["volume"],
             })
+    return snapshots
+
+
+def get_realtime_index_snapshot() -> list[dict]:
+    """从 AKShare 实时获取指数快照 (DB 为空时的回退)
+
+    使用已有的 fetch_index_daily 获取最近数据, 无需新 API。
+    """
+    from datetime import datetime, timedelta
+
+    snapshots = []
+    start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+
+    for idx in CONFIG["benchmark_indices"]:
+        try:
+            df = fetch_index_daily(idx["code"], start_date=start)
+            if df.empty:
+                continue
+            latest = df.iloc[-1]
+            change_pct = None
+            if len(df) >= 2:
+                prev = df.iloc[-2]
+                if prev["close"] > 0:
+                    change_pct = round(
+                        (latest["close"] - prev["close"]) / prev["close"] * 100, 2
+                    )
+            snapshots.append({
+                "code": idx["code"],
+                "name": idx["name"],
+                "close": float(latest["close"]),
+                "trade_date": latest["trade_date"],
+                "change_pct": change_pct,
+                "volume": float(latest.get("volume", 0)),
+            })
+        except Exception as e:
+            logger.debug("实时获取 %s 失败: %s", idx["code"], e)
+            continue
+
     return snapshots

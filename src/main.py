@@ -688,7 +688,45 @@ def cmd_knowledge(args: list[str]):
 
 
 def cmd_discover(args: list[str]):
-    """基金发现 — 从全市场 + 热点板块筛选最优基金"""
+    """基金发现 — 从全市场 + 热点板块筛选最优基金, 或按主题关键词搜索"""
+
+    # 检查 --theme 参数
+    if "--theme" in args:
+        theme_idx = args.index("--theme")
+        keywords = args[theme_idx + 1:]
+        if not keywords:
+            console.print("[red]请指定搜索关键词, 如: uv run pixiu discover --theme 养老[/]")
+            return
+
+        from src.data.fund_discovery import discover_by_theme
+
+        console.print(f"\n[bold]═══ 主题搜索: {' '.join(keywords)} ═══[/]\n")
+        results = discover_by_theme(keywords)
+        if not results:
+            console.print("[yellow]未找到匹配的基金[/]")
+            return
+
+        table = Table(title=f"搜索结果: {' '.join(keywords)}")
+        table.add_column("代码", style="cyan")
+        table.add_column("名称")
+        table.add_column("近3月")
+        table.add_column("近1年")
+        table.add_column("评分")
+
+        for r in results:
+            ret_3m = r.get("return_3m")
+            ret_1y = r.get("return_1y")
+            score = r.get("composite_score", 0)
+            table.add_row(
+                r["fund_code"],
+                r["fund_name"][:20],
+                f"{ret_3m:+.1f}%" if ret_3m is not None else "-",
+                f"{ret_1y:+.1f}%" if ret_1y is not None else "-",
+                f"{score:.1f}",
+            )
+        console.print(table)
+        return
+
     from src.data.fund_discovery import update_dynamic_pool, print_discovery_report
 
     console.print("\n[bold]═══ 基金发现 ═══[/]\n")
@@ -902,7 +940,7 @@ COMMANDS = {
     "record-trade": ("记录已执行的交易", cmd_record_trade),
     "backtest": ("回测策略", cmd_backtest),
     "daily": ("日常例行流程", cmd_daily),
-    "discover": ("基金发现 (热点+全市场)", cmd_discover),
+    "discover": ("基金发现 (热点+全市场+主题搜索)", cmd_discover),
     "fund-flow": ("资金流向分析", cmd_fund_flow),
     "hotspot": ("扫描市场热点", cmd_hotspot),
     "learn": ("查看学习进化报告", cmd_learn),

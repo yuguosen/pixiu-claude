@@ -180,6 +180,134 @@ def discover_sector_funds(
     return final[:top_n]
 
 
+def discover_by_theme(keywords: list[str], top_n: int = 10) -> list[dict]:
+    """按主题关键词搜索全市场基金
+
+    Args:
+        keywords: 搜索关键词列表, 如 ["养老", "适老"]
+        top_n: 返回最优的 N 只
+
+    Returns:
+        [{"fund_code", "fund_name", "fund_type", "match_keyword",
+          "return_3m", "return_1y", "composite_score"}]
+    """
+    directory = _get_fund_directory()
+    if directory.empty:
+        return []
+
+    rankings = _get_fund_rankings()
+    if rankings.empty:
+        return []
+
+    # 关键词匹配基金名称
+    name_col = "基金简称"
+    type_col = "基金类型"
+    all_matches = []
+
+    for keyword in keywords:
+        matched = directory[directory[name_col].str.contains(keyword, na=False)]
+        # 仅过滤: 货币基金、理财型、定开型、LOF (场内不可支付宝购买)
+        # 不过滤 FOF (养老基金大多是 FOF) 和 QDII (搜索"标普"等需要)
+        matched = matched[
+            ~matched[type_col].str.contains("LOF|货币|理财|定开", na=False)
+        ]
+        for _, row in matched.iterrows():
+            all_matches.append({
+                "fund_code": row["基金代码"],
+                "fund_name": row[name_col],
+                "fund_type": row[type_col],
+                "match_keyword": keyword,
+            })
+
+    if not all_matches:
+        return []
+
+    # 去重 (同一基金可能被多个关键词匹配)
+    seen_codes = set()
+    unique_matches = []
+    for m in all_matches:
+        if m["fund_code"] not in seen_codes:
+            seen_codes.add(m["fund_code"])
+            unique_matches.append(m)
+
+    # 用排名数据补充业绩
+    rank_map = {}
+    for _, row in rankings.iterrows():
+        code = str(row.get("基金代码", ""))
+        rank_map[code] = row
+
+    results = []
+    for m in unique_matches:
+        rank = rank_map.get(m["fund_code"])
+        if rank is None:
+            continue
+
+        try:
+            return_1m = _parse_pct(rank.get("近1月"))
+            return_3m = _parse_pct(rank.get("近3月"))
+            return_6m = _parse_pct(rank.get("近6月"))
+            return_1y = _parse_pct(rank.get("近1年"))
+        except Exception:
+            continue
+
+        # 至少有3个月数据
+        if return_3m is None:
+            continue
+
+        # 综合评分: 近1月(10%) + 近3月(30%) + 近6月(30%) + 近1年(30%)
+        score = (
+            (return_1m or 0) * 0.1
+            + return_3m * 0.3
+            + (return_6m or 0) * 0.3
+            + (return_1y or 0) * 0.3
+        )
+
+        m["return_1m"] = return_1m
+        m["return_3m"] = return_3m
+        m["return_6m"] = return_6m
+        m["return_1y"] = return_1y
+        m["return_1w"] = _parse_pct(rank.get("近1周"))
+        m["composite_score"] = round(score, 2)
+        m["fee"] = rank.get("手续费", "")
+        results.append(m)
+
+    # 按综合评分排序
+    results.sort(key=lambda x: x.get("composite_score", -999), reverse=True)
+
+    # 去掉 A/C 重复
+    final = _dedupe_share_classes(results)
+
+    # 自动加入观察池
+    today = datetime.now().strftime("%Y-%m-%d")
+    keyword_str = "+".join(keywords)
+    added = 0
+    for c in final[:top_n]:
+        existing = execute_query(
+            "SELECT fund_code FROM watchlist WHERE fund_code = ?",
+            (c["fund_code"],),
+        )
+        if not existing:
+            execute_write(
+                """INSERT INTO watchlist (fund_code, added_date, reason, target_action, notes)
+                   VALUES (?, ?, ?, 'watch', ?)""",
+                (
+                    c["fund_code"],
+                    today,
+                    f"主题搜索: {keyword_str}",
+                    json.dumps({
+                        "name": c["fund_name"],
+                        "return_3m": c.get("return_3m"),
+                        "return_1y": c.get("return_1y"),
+                    }, ensure_ascii=False),
+                ),
+            )
+            added += 1
+
+    console.print(f"  [green]搜索 \"{keyword_str}\": 匹配 {len(unique_matches)} 只, 有效 {len(final)} 只, 新增 {added} 只到观察池[/]")
+
+    return final[:top_n]
+
+
 def discover_top_funds(top_n: int = 20) -> list[dict]:
     """从全市场筛选综合排名最优的基金
 
