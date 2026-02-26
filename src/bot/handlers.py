@@ -160,12 +160,10 @@ def _extract_daily_summary() -> dict:
     except Exception:
         pass
 
-    # 2. 指数快照
+    # 2. 指数快照 (仅查 DB, 不调 AKShare)
     try:
-        from src.data.market_data import get_latest_index_snapshot, get_realtime_index_snapshot
+        from src.data.market_data import get_latest_index_snapshot
         indices = get_latest_index_snapshot()
-        if not indices:
-            indices = get_realtime_index_snapshot()
         if indices:
             summary["indices"] = indices
     except Exception:

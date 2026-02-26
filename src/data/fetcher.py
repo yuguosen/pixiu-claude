@@ -55,15 +55,17 @@ def _write_cache(path: Path, df: pd.DataFrame):
 
 
 def fetch_with_retry(func, *args, max_retries: int = 3, **kwargs) -> pd.DataFrame | None:
-    """带重试的数据获取"""
+    """带重试的数据获取 (含限速, 防止被数据源断连)"""
     for attempt in range(max_retries):
         try:
+            time.sleep(0.8)  # 限速: 防止云服务器 IP 被东方财富限流
             result = func(*args, **kwargs)
             if result is not None and not result.empty:
                 return result
         except Exception as e:
+            wait = 3 + 2 ** attempt  # 退避: 4s, 5s, 7s
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(wait)
             else:
                 raise RuntimeError(
                     f"获取数据失败 ({func.__name__}): {e}"
@@ -86,6 +88,7 @@ def fetch_with_cache(cache_key: str, params: dict, fetch_fn) -> pd.DataFrame:
         return cached
 
     try:
+        time.sleep(0.5)  # 限速
         df = fetch_fn()
         if df is not None and not df.empty:
             _write_cache(cache, df)
