@@ -224,7 +224,7 @@ def market_card(regime: dict | None, snapshots: list[dict] | None) -> dict:
     }
     color = color_map.get(regime["regime"], "blue") if regime else "blue"
 
-    return _card("市场行情", color, elements or [_md("暂无市场数据")])
+    return _card("市场行情", color, elements or [_md("暂无市场数据\n\n请先发送 **日报** 更新数据")])
 
 
 def sector_market_card(keyword: str, match: dict, detail: dict) -> dict:

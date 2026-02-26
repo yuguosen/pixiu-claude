@@ -51,7 +51,7 @@ def handle_history(limit: int = 20) -> dict:
 
 
 def handle_market() -> dict:
-    """市场快照"""
+    """市场快照 (仅查 DB, 不调 AKShare — 避免阻塞)"""
     regime = None
     snapshots = None
 
@@ -61,19 +61,12 @@ def handle_market() -> dict:
     except Exception as e:
         logger.warning("获取指数快照失败: %s", e)
 
-    # 回退: DB 无数据时从 AKShare 实时获取
-    if not snapshots:
+    if snapshots:
         try:
-            from src.data.market_data import get_realtime_index_snapshot
-            snapshots = get_realtime_index_snapshot()
+            from src.analysis.market_regime import detect_market_regime
+            regime = detect_market_regime()
         except Exception as e:
-            logger.warning("实时指数获取失败: %s", e)
-
-    try:
-        from src.analysis.market_regime import detect_market_regime
-        regime = detect_market_regime()
-    except Exception as e:
-        logger.warning("检测市场状态失败: %s", e)
+            logger.warning("检测市场状态失败: %s", e)
 
     return cards.market_card(regime, snapshots)
 

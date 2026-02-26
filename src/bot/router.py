@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+import time
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
@@ -12,6 +13,24 @@ from src.bot.sender import reply_card
 from src.bot.session import SessionManager
 
 logger = logging.getLogger(__name__)
+
+# ── 消息去重 (防止 SDK 重复投递) ──
+_seen_messages: dict[str, float] = {}
+_DEDUP_TTL = 60  # 60 秒内同一 message_id 只处理一次
+
+
+def _is_duplicate(message_id: str) -> bool:
+    """检查消息是否已处理过"""
+    now = time.time()
+    # 清理过期条目
+    expired = [k for k, t in _seen_messages.items() if now - t > _DEDUP_TTL]
+    for k in expired:
+        del _seen_messages[k]
+    if message_id in _seen_messages:
+        return True
+    _seen_messages[message_id] = now
+    return False
+
 
 # 命令映射: 用户输入 → 内部命令名
 COMMAND_MAP = {
@@ -95,6 +114,9 @@ def _run_long_command(client: lark.Client, message_id: str, cmd: str, args: list
         elif cmd == "search":
             keyword = " ".join(args) if args else ""
             result_card = handlers.handle_search(keyword)
+        elif cmd == "market_sector":
+            keyword = " ".join(args) if args else ""
+            result_card = handlers.handle_market_sector(keyword)
         else:
             return
         reply_card(client, message_id, result_card)
@@ -112,6 +134,11 @@ def build_event_handler(client: lark.Client):
             return
         user_id = _get_user_id(data)
         message_id = _get_message_id(data)
+
+        # 消息去重
+        if _is_duplicate(message_id):
+            logger.debug("跳过重复消息: %s", message_id)
+            return
 
         logger.info("收到消息: user=%s text=%s", user_id, text)
 
@@ -140,7 +167,13 @@ def build_event_handler(client: lark.Client):
         elif cmd == "market":
             if args:
                 keyword = " ".join(args)
-                reply_card(client, message_id, handlers.handle_market_sector(keyword))
+                reply_card(client, message_id, cards.processing_card(f"查询 \"{keyword}\" 板块行情"))
+                thread = threading.Thread(
+                    target=_run_long_command,
+                    args=(client, message_id, "market_sector", args),
+                    daemon=True,
+                )
+                thread.start()
             else:
                 reply_card(client, message_id, handlers.handle_market())
 
