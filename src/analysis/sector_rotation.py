@@ -57,7 +57,16 @@ BROAD_INDICES = [
 
 
 def fetch_sector_realtime() -> pd.DataFrame:
-    """获取所有行业板块的实时行情"""
+    """获取所有行业板块的实时行情 (优先同花顺, 降级东方财富)"""
+    # 优先: 同花顺 (阿里云服务器上稳定可用)
+    try:
+        from src.data.eastmoney import ths_board_industry_list
+        df = ths_board_industry_list()
+        if df is not None and not df.empty:
+            return df
+    except Exception:
+        pass
+    # 降级: 东方财富
     try:
         df = ak.stock_board_industry_name_em()
         return df
@@ -660,8 +669,15 @@ def get_board_detail(board_name: str, board_type: str = "industry",
 
 
 def _fetch_all_industry_boards() -> pd.DataFrame:
-    """获取全量行业板块实时行情 (带缓存)"""
+    """获取全量行业板块实时行情 (优先同花顺, 降级东方财富, 带缓存)"""
     def _fetch():
+        try:
+            from src.data.eastmoney import ths_board_industry_list
+            df = ths_board_industry_list()
+            if df is not None and not df.empty:
+                return df
+        except Exception:
+            pass
         return ak.stock_board_industry_name_em()
     return fetch_with_cache("industry_board_list", {}, _fetch)
 

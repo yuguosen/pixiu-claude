@@ -216,6 +216,28 @@ def fetch_index_daily(
     if cached is not None and not cached.empty:
         return cached
 
+    # 优先使用新浪直接 HTTP (阿里云服务器上 AKShare 东方财富接口不通)
+    try:
+        from src.data.eastmoney import sina_index_hist
+        df = sina_index_hist(index_code, datalen=1000)
+        if df is not None and not df.empty:
+            # 日期过滤
+            if start_date:
+                sd = start_date.replace("-", "")
+                sd_fmt = f"{sd[:4]}-{sd[4:6]}-{sd[6:8]}" if len(sd) == 8 else start_date
+                df = df[df["trade_date"] >= sd_fmt]
+            if end_date:
+                ed = end_date.replace("-", "")
+                ed_fmt = f"{ed[:4]}-{ed[4:6]}-{ed[6:8]}" if len(ed) == 8 else end_date
+                df = df[df["trade_date"] <= ed_fmt]
+            df = df.reset_index(drop=True)
+            _write_cache(cache, df)
+            return df
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("新浪指数降级: %s", e)
+
+    # 降级: AKShare
     # akshare 指数日线需要 start_date 和 end_date 为 YYYYMMDD 格式
     kwargs = {"symbol": index_code, "period": "daily"}
     if start_date:
