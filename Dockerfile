@@ -8,7 +8,8 @@ RUN pip install --no-cache-dir uv -i https://mirrors.aliyun.com/pypi/simple/
 # 先复制依赖文件，利用 Docker 缓存
 COPY pyproject.toml uv.lock* ./
 
-# 安装依赖
+# 安装依赖 (使用阿里云 PyPI 镜像加速)
+ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 RUN uv sync --no-dev --no-install-project
 
 # 复制源码
