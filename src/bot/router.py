@@ -133,95 +133,108 @@ def build_event_handler(client: lark.Client):
     """构建飞书消息事件处理函数"""
 
     def handle_message(data: P2ImMessageReceiveV1):
-        text = _extract_text(data)
-        if not text:
-            return
-        user_id = _get_user_id(data)
-        message_id = _get_message_id(data)
-
-        # 消息去重
-        if _is_duplicate(message_id):
-            logger.debug("跳过重复消息: %s", message_id)
-            return
-
-        logger.info("收到消息: user=%s text=%s", user_id, text)
-
-        # 1. 检查是否有活跃的多步会话
-        if session_manager.has_active_session(user_id):
-            _handle_session(client, message_id, user_id, text)
-            return
-
-        # 2. 解析命令
-        cmd, args = _parse_command(text)
-        if not cmd:
-            reply_card(client, message_id, cards.help_card())
-            return
-
-        # 3. 处理命令
-        if cmd == "help":
-            reply_card(client, message_id, handlers.handle_help())
-
-        elif cmd == "portfolio":
-            reply_card(client, message_id, handlers.handle_portfolio())
-
-        elif cmd == "history":
-            limit = int(args[0]) if args and args[0].isdigit() else 20
-            reply_card(client, message_id, handlers.handle_history(limit))
-
-        elif cmd == "market":
-            if args:
-                keyword = " ".join(args)
-                reply_card(client, message_id, cards.processing_card(f"查询 \"{keyword}\" 板块行情"))
-                thread = threading.Thread(
-                    target=_run_long_command,
-                    args=(client, message_id, "market_sector", args),
-                    daemon=True,
-                )
-                thread.start()
-            else:
-                reply_card(client, message_id, handlers.handle_market())
-
-        elif cmd == "allocation":
-            reply_card(client, message_id, handlers.handle_allocation())
-
-        elif cmd == "trade":
-            prompt = session_manager.start_trade_session(user_id)
-            reply_card(client, message_id, cards.trade_prompt_card("第1步", prompt))
-
-        elif cmd == "search":
-            keyword = " ".join(args)
-            if not keyword:
-                reply_card(client, message_id, cards.error_card("请输入搜索关键词，如: 搜索 养老"))
-                return
-            reply_card(client, message_id, cards.processing_card(f"搜索 \"{keyword}\""))
-            thread = threading.Thread(
-                target=_run_long_command,
-                args=(client, message_id, cmd, args),
-                daemon=True,
-            )
-            thread.start()
-
-        elif cmd in LONG_RUNNING_COMMANDS:
-            # 先回复 "处理中", 再在后台线程执行
-            task_name = "生成交易建议" if cmd == "recommend" else "日常分析流程"
-            reply_card(client, message_id, cards.processing_card(task_name))
-            thread = threading.Thread(
-                target=_run_long_command,
-                args=(client, message_id, cmd),
-                daemon=True,
-            )
-            thread.start()
-
-        elif cmd == "confirm_trade":
-            _handle_confirm_trade(client, message_id, user_id, args)
-
-        elif cmd == "pending_trades":
-            _handle_pending_trades(client, message_id)
-
-        else:
-            reply_card(client, message_id, cards.help_card())
+        try:
+            _dispatch(client, data)
+        except Exception:
+            logger.exception("处理消息时发生未捕获异常")
+            try:
+                mid = _get_message_id(data)
+                reply_card(client, mid, cards.error_card("内部错误，请稍后重试"))
+            except Exception:
+                pass
 
     return handle_message
+
+
+def _dispatch(client: lark.Client, data: P2ImMessageReceiveV1):
+    """实际消息分发逻辑"""
+    text = _extract_text(data)
+    if not text:
+        return
+    user_id = _get_user_id(data)
+    message_id = _get_message_id(data)
+
+    # 消息去重
+    if _is_duplicate(message_id):
+        logger.debug("跳过重复消息: %s", message_id)
+        return
+
+    logger.info("收到消息: user=%s text=%s", user_id, text)
+
+    # 1. 检查是否有活跃的多步会话
+    if session_manager.has_active_session(user_id):
+        _handle_session(client, message_id, user_id, text)
+        return
+
+    # 2. 解析命令
+    cmd, args = _parse_command(text)
+    if not cmd:
+        reply_card(client, message_id, cards.help_card())
+        return
+
+    # 3. 处理命令
+    if cmd == "help":
+        reply_card(client, message_id, handlers.handle_help())
+
+    elif cmd == "portfolio":
+        reply_card(client, message_id, handlers.handle_portfolio())
+
+    elif cmd == "history":
+        limit = int(args[0]) if args and args[0].isdigit() else 20
+        reply_card(client, message_id, handlers.handle_history(limit))
+
+    elif cmd == "market":
+        if args:
+            keyword = " ".join(args)
+            reply_card(client, message_id, cards.processing_card(f"查询 \"{keyword}\" 板块行情"))
+            thread = threading.Thread(
+                target=_run_long_command,
+                args=(client, message_id, "market_sector", args),
+                daemon=True,
+            )
+            thread.start()
+        else:
+            reply_card(client, message_id, handlers.handle_market())
+
+    elif cmd == "allocation":
+        reply_card(client, message_id, handlers.handle_allocation())
+
+    elif cmd == "trade":
+        prompt = session_manager.start_trade_session(user_id)
+        reply_card(client, message_id, cards.trade_prompt_card("第1步", prompt))
+
+    elif cmd == "search":
+        keyword = " ".join(args)
+        if not keyword:
+            reply_card(client, message_id, cards.error_card("请输入搜索关键词，如: 搜索 养老"))
+            return
+        reply_card(client, message_id, cards.processing_card(f"搜索 \"{keyword}\""))
+        thread = threading.Thread(
+            target=_run_long_command,
+            args=(client, message_id, cmd, args),
+            daemon=True,
+        )
+        thread.start()
+
+    elif cmd in LONG_RUNNING_COMMANDS:
+        # 先回复 "处理中", 再在后台线程执行
+        task_name = "生成交易建议" if cmd == "recommend" else "日常分析流程"
+        reply_card(client, message_id, cards.processing_card(task_name))
+        thread = threading.Thread(
+            target=_run_long_command,
+            args=(client, message_id, cmd),
+            daemon=True,
+        )
+        thread.start()
+
+    elif cmd == "confirm_trade":
+        _handle_confirm_trade(client, message_id, user_id, args)
+
+    elif cmd == "pending_trades":
+        _handle_pending_trades(client, message_id)
+
+    else:
+        reply_card(client, message_id, cards.help_card())
 
 
 def _handle_session(client: lark.Client, message_id: str, user_id: str, text: str):
