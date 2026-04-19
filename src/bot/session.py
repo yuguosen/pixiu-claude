@@ -123,7 +123,7 @@ class SessionManager:
     """会话管理器 — 管理所有用户的多步会话"""
 
     def __init__(self):
-        self._sessions: dict[str, TradeSession] = {}
+        self._sessions: dict[str, TradeSession | QuickTradeSession] = {}
 
     def has_active_session(self, user_id: str) -> bool:
         session = self._sessions.get(user_id)
@@ -137,6 +137,17 @@ class SessionManager:
         session = TradeSession(user_id=user_id)
         self._sessions[user_id] = session
         return session.current_prompt or ""
+
+    def start_quick_trade_session(self, user_id: str, trade_id: int,
+                                   fund_code: str, action: str, amount: float) -> str:
+        """启动快捷交易确认会话, 返回提示"""
+        session = QuickTradeSession(
+            user_id=user_id, trade_id=trade_id,
+            fund_code=fund_code, action=action, amount=amount,
+        )
+        self._sessions[user_id] = session
+        action_label = "买入" if action == "buy" else "卖出"
+        return f"确认{action_label} {fund_code}，金额 {amount:,.0f} 元\n请输入成交净值："
 
     def process(self, user_id: str, text: str) -> tuple[str, dict | None]:
         """处理会话输入"""
@@ -157,3 +168,41 @@ class SessionManager:
 
     def cancel(self, user_id: str):
         self._sessions.pop(user_id, None)
+
+
+@dataclass
+class QuickTradeSession:
+    """快捷交易确认会话 — 只需输入成交净值"""
+    user_id: str
+    trade_id: int
+    fund_code: str
+    action: str
+    amount: float
+    created_at: float = field(default_factory=time.time)
+
+    TIMEOUT = 120  # 2 分钟超时
+
+    @property
+    def is_expired(self) -> bool:
+        return time.time() - self.created_at > self.TIMEOUT
+
+    def process_input(self, text: str) -> tuple[str, dict | None]:
+        text = text.strip()
+        if text in ("取消", "cancel", "n"):
+            return "cancelled", None
+        try:
+            nav = float(text)
+            if nav <= 0:
+                return "error:净值必须大于0", None
+            shares = self.amount / nav
+            return "success", {
+                "trade_id": self.trade_id,
+                "fund_code": self.fund_code,
+                "action": self.action,
+                "amount": self.amount,
+                "nav": nav,
+                "shares": shares,
+                "trade_date": datetime.now().strftime("%Y-%m-%d"),
+            }
+        except ValueError:
+            return "error:请输入有效的净值数字", None

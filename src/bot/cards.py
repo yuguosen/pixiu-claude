@@ -83,7 +83,9 @@ def help_card() -> dict:
         {"cmd": "日报", "desc": "完整日常流程 (11步)"},
         {"cmd": "配置", "desc": "资产配置检查"},
         {"cmd": "搜索 <关键词>", "desc": "按主题搜索基金"},
-        {"cmd": "记录", "desc": "记录交易 (多步对话)"},
+        {"cmd": "待确认", "desc": "查看今日待确认建议"},
+        {"cmd": "确认 <序号> <净值>", "desc": "快捷回录交易"},
+        {"cmd": "记录", "desc": "手动记录交易 (多步对话)"},
     ]
     return _card("貔貅 — 命令列表", "purple", [
         _table(columns, rows, page_size=10),
@@ -332,6 +334,9 @@ def recommendation_card(report_path: str, recommendations: list[dict] | None = N
             color = "red"
         else:
             color = "blue"
+        # 添加快捷确认提示
+        elements.append(_hr())
+        elements.append(_md("💡 在支付宝操作后，回复 `待确认` 查看列表，`确认 <序号> <净值>` 快捷回录"))
     else:
         color = "blue"
 
@@ -573,3 +578,31 @@ def trade_success_card(trade_info: dict) -> dict:
             f"份额 {shares:.2f}"
         ),
     ])
+
+
+def pending_trades_card(pending: list[dict]) -> dict:
+    """待确认建议列表卡片"""
+    columns = [
+        _col("idx", "#", align="center"),
+        _col("action", "操作", align="center"),
+        _col("fund", "基金"),
+        _col("amount", "金额", align="right"),
+    ]
+    rows = []
+    for i, p in enumerate(pending, 1):
+        action = "买入" if p["action"] == "buy" else "卖出"
+        emoji = "🟢" if p["action"] == "buy" else "🔴"
+        fund_name = p.get("fund_name") or p["fund_code"]
+        rows.append({
+            "idx": str(i),
+            "action": f"{emoji} {action}",
+            "fund": f"{fund_name} ({p['fund_code']})",
+            "amount": f"{p['amount']:,.0f}",
+        })
+
+    elements = [
+        _table(columns, rows, page_size=10),
+        _hr(),
+        _md("**快捷确认**: 回复 `确认 <序号> <净值>`\n例如: `确认 1 3.45`"),
+    ]
+    return _card(f"待确认建议 ({len(pending)} 条)", "indigo", elements)

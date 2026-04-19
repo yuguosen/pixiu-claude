@@ -10,7 +10,7 @@ from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
 from src.bot import cards, handlers
 from src.bot.sender import reply_card
-from src.bot.session import SessionManager
+from src.bot.session import SessionManager, QuickTradeSession
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,10 @@ COMMAND_MAP = {
     "资产配置": "allocation",
     "搜索": "search",
     "/search": "search",
+    "确认": "confirm_trade",
+    "/confirm": "confirm_trade",
+    "待确认": "pending_trades",
+    "/pending": "pending_trades",
 }
 
 # 耗时命令 — 需要在独立线程中执行
@@ -208,6 +212,12 @@ def build_event_handler(client: lark.Client):
             )
             thread.start()
 
+        elif cmd == "confirm_trade":
+            _handle_confirm_trade(client, message_id, user_id, args)
+
+        elif cmd == "pending_trades":
+            _handle_pending_trades(client, message_id)
+
         else:
             reply_card(client, message_id, cards.help_card())
 
@@ -216,10 +226,14 @@ def build_event_handler(client: lark.Client):
 
 def _handle_session(client: lark.Client, message_id: str, user_id: str, text: str):
     """处理多步会话输入"""
+    # 判断是否是快捷交易会话
+    session = session_manager._sessions.get(user_id)
+    is_quick = isinstance(session, QuickTradeSession)
+
     result, data = session_manager.process(user_id, text)
 
     if result == "cancelled":
-        reply_card(client, message_id, cards.error_card("已取消交易录入"))
+        reply_card(client, message_id, cards.error_card("已取消"))
 
     elif result == "expired":
         reply_card(client, message_id, cards.error_card("会话已超时, 请重新开始"))
@@ -228,7 +242,10 @@ def _handle_session(client: lark.Client, message_id: str, user_id: str, text: st
         reply_card(client, message_id, cards.trade_confirm_card(data))
 
     elif result == "success":
-        result_card = handlers.handle_trade_record(data)
+        if is_quick:
+            result_card = handlers.handle_quick_trade(data)
+        else:
+            result_card = handlers.handle_trade_record(data)
         reply_card(client, message_id, result_card)
 
     elif result.startswith("error:"):
@@ -242,3 +259,81 @@ def _handle_session(client: lark.Client, message_id: str, user_id: str, text: st
         session = session_manager._sessions.get(user_id)
         step = session.step + 1 if session else 1
         reply_card(client, message_id, cards.trade_prompt_card(f"第{step}步", result))
+
+
+def _handle_confirm_trade(client: lark.Client, message_id: str, user_id: str, args: list[str]):
+    """处理 '确认 <序号> [净值]' 命令"""
+    from src.memory.database import execute_query
+
+    if not args or not args[0].isdigit():
+        reply_card(client, message_id, cards.error_card(
+            "用法: **确认 <序号>** [净值]\n\n"
+            "序号从今日建议列表中获取，发送 **待确认** 查看"
+        ))
+        return
+
+    idx = int(args[0])
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    pending = execute_query(
+        "SELECT * FROM trades WHERE trade_date = ? AND status = 'pending' ORDER BY created_at DESC",
+        (today,),
+    )
+    if not pending:
+        reply_card(client, message_id, cards.error_card("今日没有待确认的建议"))
+        return
+    if idx < 1 or idx > len(pending):
+        reply_card(client, message_id, cards.error_card(f"序号无效，当前有 {len(pending)} 条待确认"))
+        return
+
+    trade = pending[idx - 1]
+
+    # 如果用户同时给了净值，直接确认
+    if len(args) >= 2:
+        try:
+            nav = float(args[1])
+            if nav <= 0:
+                reply_card(client, message_id, cards.error_card("净值必须大于0"))
+                return
+            shares = trade["amount"] / nav
+            trade_data = {
+                "trade_id": trade["id"],
+                "fund_code": trade["fund_code"],
+                "action": trade["action"],
+                "amount": trade["amount"],
+                "nav": nav,
+                "shares": shares,
+                "trade_date": today,
+            }
+            result_card = handlers.handle_quick_trade(trade_data)
+            reply_card(client, message_id, result_card)
+            return
+        except ValueError:
+            pass
+
+    # 否则启动快捷会话，只问净值
+    prompt = session_manager.start_quick_trade_session(
+        user_id, trade["id"], trade["fund_code"], trade["action"], trade["amount"],
+    )
+    reply_card(client, message_id, cards.trade_prompt_card("确认交易", prompt))
+
+
+def _handle_pending_trades(client: lark.Client, message_id: str):
+    """显示今日待确认的建议"""
+    from src.memory.database import execute_query
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    pending = execute_query(
+        """SELECT t.id, t.fund_code, t.action, t.amount, t.confidence, f.fund_name
+           FROM trades t LEFT JOIN funds f ON t.fund_code = f.fund_code
+           WHERE t.trade_date = ? AND t.status = 'pending'
+           ORDER BY t.created_at DESC""",
+        (today,),
+    )
+
+    if not pending:
+        reply_card(client, message_id, cards.error_card("今日没有待确认的建议"))
+        return
+
+    reply_card(client, message_id, cards.pending_trades_card(pending))

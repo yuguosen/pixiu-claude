@@ -488,6 +488,61 @@ def get_index_history(
     return execute_query(sql, tuple(params))
 
 
+def update_account_after_trade(action: str, amount: float, nav: float, shares: float, fund_code: str, trade_date: str):
+    """交易回录后更新账户快照 (现金 + 总资产)
+
+    buy: cash -= amount
+    sell: cash += (shares * nav)
+    """
+    from datetime import datetime
+
+    # 获取最新快照作为基准
+    latest = execute_query(
+        "SELECT * FROM account_snapshots ORDER BY snapshot_date DESC LIMIT 1"
+    )
+    if latest:
+        cash = latest[0]["cash"]
+        invested = latest[0]["invested"]
+    else:
+        cash = CONFIG["current_cash"]
+        invested = 0.0
+
+    if action == "buy":
+        cash -= amount
+        invested += amount
+    elif action == "sell":
+        proceeds = shares * nav
+        cash += proceeds
+        invested -= amount  # amount = 原始买入金额 (近似用卖出金额)
+
+    # 计算当前持仓市值
+    holdings = execute_query(
+        "SELECT fund_code, shares, current_nav FROM portfolio WHERE status = 'holding'"
+    )
+    holdings_value = sum(h["shares"] * (h["current_nav"] or 0) for h in holdings)
+    total_value = cash + holdings_value
+
+    initial = CONFIG["initial_capital"]
+    profit_loss = total_value - initial
+    return_pct = (profit_loss / initial * 100) if initial > 0 else 0
+
+    today = trade_date or datetime.now().strftime("%Y-%m-%d")
+
+    # UPSERT 快照
+    execute_write(
+        """INSERT INTO account_snapshots (snapshot_date, total_value, cash, invested,
+               total_profit_loss, total_return_pct, max_drawdown_pct, holdings_json)
+           VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+           ON CONFLICT(snapshot_date) DO UPDATE SET
+               total_value=excluded.total_value, cash=excluded.cash,
+               invested=excluded.invested, total_profit_loss=excluded.total_profit_loss,
+               total_return_pct=excluded.total_return_pct,
+               holdings_json=excluded.holdings_json""",
+        (today, total_value, cash, invested, profit_loss, return_pct,
+         json.dumps([{"code": h["fund_code"], "shares": h["shares"]} for h in holdings])),
+    )
+
+
 import functools
 
 @functools.lru_cache(maxsize=128)

@@ -254,7 +254,7 @@ def handle_search(keyword: str) -> dict:
 def handle_trade_record(trade_data: dict) -> dict:
     """将交易录入写入数据库"""
     try:
-        from src.memory.database import execute_write
+        from src.memory.database import execute_write, update_account_after_trade
 
         fund_code = trade_data["fund_code"]
         action = trade_data["action"]
@@ -277,7 +277,46 @@ def handle_trade_record(trade_data: dict) -> dict:
                 (fund_code, shares, nav, nav, trade_date),
             )
 
+        # 更新账户状态
+        update_account_after_trade(action, amount, nav, shares, fund_code, trade_date)
+
         return cards.trade_success_card(trade_data)
     except Exception as e:
         logger.exception("交易记录失败")
         return cards.error_card(f"交易记录失败: {e}")
+
+
+def handle_quick_trade(trade_data: dict) -> dict:
+    """从 pending 建议快捷确认交易"""
+    try:
+        from src.memory.database import execute_write, execute_query, update_account_after_trade
+
+        trade_id = trade_data["trade_id"]
+        nav = trade_data["nav"]
+        shares = trade_data["shares"]
+        trade_date = trade_data["trade_date"]
+        fund_code = trade_data["fund_code"]
+        action = trade_data["action"]
+        amount = trade_data["amount"]
+
+        # 更新 pending → executed
+        execute_write(
+            """UPDATE trades SET status='executed', nav=?, shares=?
+               WHERE id=? AND status='pending'""",
+            (nav, shares, trade_id),
+        )
+
+        if action == "buy":
+            execute_write(
+                """INSERT INTO portfolio (fund_code, shares, cost_price, current_nav, buy_date, status)
+                   VALUES (?, ?, ?, ?, ?, 'holding')""",
+                (fund_code, shares, nav, nav, trade_date),
+            )
+
+        # 更新账户状态
+        update_account_after_trade(action, amount, nav, shares, fund_code, trade_date)
+
+        return cards.trade_success_card(trade_data)
+    except Exception as e:
+        logger.exception("快捷交易确认失败")
+        return cards.error_card(f"确认失败: {e}")
