@@ -9,9 +9,16 @@
 数据来源: 东方财富 via AKShare
 """
 
+import logging
+
 import akshare as ak
 import pandas as pd
 from rich.console import Console
+
+logger = logging.getLogger(__name__)
+
+# 东方财富 push2*.eastmoney.com 在阿里云服务器上不通, 第一次失败后快速跳过
+_EM_API_FAILED = False
 from rich.table import Table
 
 console = Console()
@@ -32,6 +39,10 @@ def get_market_fund_flow(days: int = 20) -> dict | None:
             "detail": str,
         }
     """
+    global _EM_API_FAILED
+    if _EM_API_FAILED:
+        logger.debug("跳过市场资金流向 (EM API 已标记不可用)")
+        return None
     try:
         df = ak.stock_market_fund_flow()
         if df is None or df.empty:
@@ -95,7 +106,8 @@ def get_market_fund_flow(days: int = 20) -> dict | None:
             "detail": detail,
         }
     except Exception as e:
-        console.print(f"  [dim]市场资金流向获取失败: {e}[/]")
+        _EM_API_FAILED = True
+        logger.warning("市场资金流向获取失败 (已标记 EM 不可用): %s", e)
         return None
 
 
@@ -108,6 +120,10 @@ def get_sector_fund_flow_ranking(period: str = "5日") -> list[dict]:
     Returns:
         [{sector_name, net_inflow, net_inflow_pct, rank}, ...]
     """
+    global _EM_API_FAILED
+    if _EM_API_FAILED:
+        logger.debug("跳过行业资金流向 (EM API 已标记不可用)")
+        return []
     try:
         df = ak.stock_sector_fund_flow_rank(indicator=period, sector_type="行业资金流")
         if df is None or df.empty:
@@ -138,7 +154,8 @@ def get_sector_fund_flow_ranking(period: str = "5日") -> list[dict]:
 
         return results
     except Exception as e:
-        console.print(f"  [dim]行业资金流向获取失败: {e}[/]")
+        _EM_API_FAILED = True
+        logger.warning("行业资金流向获取失败 (已标记 EM 不可用): %s", e)
         return []
 
 
@@ -214,6 +231,10 @@ def get_etf_flow_snapshot(top_n: int = 20) -> list[dict]:
     Returns:
         [{code, name, main_inflow, main_inflow_pct, shares, turnover}, ...]
     """
+    global _EM_API_FAILED
+    if _EM_API_FAILED:
+        logger.debug("跳过 ETF 资金流向 (EM API 已标记不可用)")
+        return []
     try:
         df = ak.fund_etf_spot_em()
         if df is None or df.empty:
@@ -270,7 +291,8 @@ def get_etf_flow_snapshot(top_n: int = 20) -> list[dict]:
 
         return results
     except Exception as e:
-        console.print(f"  [dim]ETF 资金快照获取失败: {e}[/]")
+        _EM_API_FAILED = True
+        logger.warning("ETF 资金快照获取失败 (已标记 EM 不可用): %s", e)
         return []
 
 

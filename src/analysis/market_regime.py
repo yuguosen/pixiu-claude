@@ -161,6 +161,9 @@ def _get_northbound_score() -> float:
     """
     try:
         import akshare as ak
+        from src.analysis.fund_flow import _EM_API_FAILED
+        if _EM_API_FAILED:
+            return 0
         # 获取沪股通 + 深股通数据
         df_sh = ak.stock_hsgt_hist_em(symbol="沪股通")
         df_sz = ak.stock_hsgt_hist_em(symbol="深股通")

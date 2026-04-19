@@ -7,6 +7,7 @@ dependencies = [
     "akshare>=1.18.25",
     "anthropic>=0.52.0",
     "google-genai>=1.0.0",
+    "openai>=1.0.0",
     "numpy>=2.4.2",
     "pandas>=3.0.1",
     "pydantic>=2.0",
@@ -21,6 +22,7 @@ dependencies = [
 [project.scripts]
 pixiu = "src.main:main"
 pixiu-bot = "src.bot.app:main"
+pixiu-claude-bot = "src.claude_bot.app:main"
 
 [tool.uv]
 package = true

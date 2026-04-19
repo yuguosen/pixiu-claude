@@ -18,6 +18,10 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
+# 东方财富 push2*.eastmoney.com 在阿里云服务器上全部不通
+# 第一次失败后自动标记, 后续调用直接跳过, 避免 29 个板块各超时 3 次
+_EM_BOARD_API_FAILED = False
+
 from src.data.fetcher import fetch_index_daily, fetch_with_cache
 from src.analysis.indicators import calculate_ma
 from src.memory.database import execute_query, execute_write, execute_many
@@ -77,16 +81,25 @@ def fetch_sector_realtime() -> pd.DataFrame:
 
 def fetch_sector_fund_flow() -> pd.DataFrame:
     """获取行业资金流向"""
+    global _EM_BOARD_API_FAILED
+    if _EM_BOARD_API_FAILED:
+        logger.debug("跳过资金流向 (EM API 已标记不可用)")
+        return pd.DataFrame()
     try:
         df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
         return df
     except Exception as e:
-        console.print(f"[yellow]获取资金流向失败: {e}[/]")
+        _EM_BOARD_API_FAILED = True
+        logger.warning("获取资金流向失败 (已标记 EM 不可用): %s", e)
         return pd.DataFrame()
 
 
 def fetch_sector_history(sector_name: str, days: int = 60) -> pd.DataFrame:
     """获取单个板块的历史行情"""
+    global _EM_BOARD_API_FAILED
+    if _EM_BOARD_API_FAILED:
+        logger.debug("跳过板块历史 %s (EM API 已标记不可用)", sector_name)
+        return pd.DataFrame()
     try:
         from datetime import timedelta
         end = datetime.now().strftime("%Y%m%d")
@@ -106,7 +119,8 @@ def fetch_sector_history(sector_name: str, days: int = 60) -> pd.DataFrame:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
     except Exception as e:
-        console.print(f"  [dim]获取 {sector_name} 历史失败: {e}[/]")
+        _EM_BOARD_API_FAILED = True
+        logger.warning("获取 %s 历史失败 (已标记 EM 不可用): %s", sector_name, e)
         return pd.DataFrame()
 
 
@@ -691,6 +705,10 @@ def _fetch_all_concept_boards() -> pd.DataFrame:
 
 def _fetch_concept_history(concept_name: str, days: int = 10) -> pd.DataFrame:
     """获取概念板块历史行情"""
+    global _EM_BOARD_API_FAILED
+    if _EM_BOARD_API_FAILED:
+        logger.debug("跳过概念板块历史 %s (EM API 已标记不可用)", concept_name)
+        return pd.DataFrame()
     try:
         from datetime import timedelta
         end = datetime.now().strftime("%Y%m%d")
@@ -710,7 +728,8 @@ def _fetch_concept_history(concept_name: str, days: int = 10) -> pd.DataFrame:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
     except Exception as e:
-        logger.debug("获取概念板块 %s 历史失败: %s", concept_name, e)
+        _EM_BOARD_API_FAILED = True
+        logger.debug("获取概念板块 %s 历史失败 (已标记 EM 不可用): %s", concept_name, e)
         return pd.DataFrame()
 
 

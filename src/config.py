@@ -50,7 +50,7 @@ CONFIG = {
 
     # LLM 智能体 — 双后端支持 (通过 .env 中 LLM_PROVIDER 切换)
     "llm": {
-        "provider": "gemini",  # "gemini" 或 "anthropic"，运行时从 .env 覆盖
+        "provider": "openclaw",  # "openclaw" / "gemini" / "anthropic"，运行时从 .env 覆盖
         "max_tokens": 4096,
         "max_retries": 3,
         "retry_backoff_base": 2,
@@ -59,6 +59,12 @@ CONFIG = {
         "enable_thinking": True,
         "enable_reflection": True,
         "reflection_periods": [7, 30],  # 天
+        # OpenClaw 本地代理 (OpenAI 兼容格式, 无需 API Key)
+        "openclaw": {
+            "analysis_model": "claude-haiku-4",
+            "decision_model": "claude-sonnet-4",
+            "critical_model": "claude-opus-4",
+        },
         # Gemini 配置
         "gemini": {
             "analysis_model": "gemini-2.0-flash",

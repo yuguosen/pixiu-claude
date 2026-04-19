@@ -31,9 +31,9 @@ def load_env() -> None:
 
 
 def get_provider() -> str:
-    """获取当前 LLM 后端 ('gemini' 或 'anthropic')"""
+    """获取当前 LLM 后端 ('openclaw' / 'gemini' / 'anthropic')"""
     load_env()
-    return os.environ.get("LLM_PROVIDER", CONFIG.get("llm", {}).get("provider", "gemini"))
+    return os.environ.get("LLM_PROVIDER", CONFIG.get("llm", {}).get("provider", "openclaw"))
 
 
 def get_provider_config(provider: str | None = None) -> dict:
@@ -108,6 +108,37 @@ def _call_gemini(
     return text, total_tokens
 
 
+def _call_openclaw(
+    system: str,
+    user_message: str,
+    model: str,
+    max_tokens: int,
+) -> tuple[str, int]:
+    """调用 OpenClaw 本地代理 (OpenAI 兼容格式, 无需 API Key)"""
+    from openai import OpenAI
+
+    base_url = os.environ.get("OPENCLAW_BASE_URL", "http://localhost:3456/v1")
+
+    client = OpenAI(api_key="not-needed", base_url=base_url)
+
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        temperature=0.7,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_message},
+        ],
+    )
+
+    text = response.choices[0].message.content or ""
+    total_tokens = 0
+    if response.usage:
+        total_tokens = response.usage.total_tokens
+
+    return text, total_tokens
+
+
 def _call_anthropic(
     system: str,
     user_message: str,
@@ -177,7 +208,9 @@ def _dispatch(
     max_tokens: int,
 ) -> tuple[str, int]:
     """分发到指定 Provider"""
-    if provider == "anthropic":
+    if provider == "openclaw":
+        return _call_openclaw(system, user_message, model, max_tokens)
+    elif provider == "anthropic":
         return _call_anthropic(system, user_message, model, max_tokens)
     else:
         return _call_gemini(system, user_message, model, max_tokens)
@@ -187,12 +220,29 @@ def _dispatch(
 
 
 def _get_fallback_provider(primary: str) -> str | None:
-    """获取备用 Provider (需有 API Key)"""
+    """获取备用 Provider (需有 API Key 或可用代理)"""
     load_env()
-    fallback = "anthropic" if primary == "gemini" else "gemini"
-    key_env = "ANTHROPIC_API_KEY" if fallback == "anthropic" else "GEMINI_API_KEY"
-    if os.environ.get(key_env, ""):
-        return fallback
+
+    # 按优先级尝试的候选列表
+    candidates = []
+    if primary == "openclaw":
+        candidates = ["anthropic", "gemini"]
+    elif primary == "anthropic":
+        candidates = ["openclaw", "gemini"]
+    else:  # gemini
+        candidates = ["openclaw", "anthropic"]
+
+    for candidate in candidates:
+        if candidate == "openclaw":
+            # openclaw 不需要 API Key，只要配了 base_url 就认为可用
+            if os.environ.get("OPENCLAW_BASE_URL", ""):
+                return candidate
+        elif candidate == "anthropic":
+            if os.environ.get("ANTHROPIC_API_KEY", ""):
+                return candidate
+        elif candidate == "gemini":
+            if os.environ.get("GEMINI_API_KEY", ""):
+                return candidate
     return None
 
 
